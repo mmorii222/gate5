@@ -1,0 +1,352 @@
+googleスプレッドシートとapp scriptを使用します。app script用に以下に送る指示通りコードを作成してください。●対象システム IT 資産管理システムの「PC 貸出処理」。社員が社内の共用ノート PC を一時的に借りる 仕組みです。
+
+2. PC 貸出機能 仕様書(正常系のみ・未完成)
+   これが配布される仕様書のすべてです。
+   2.1 概要
+   社員が共用ノート PC を貸出申請し、返却するまでを管理する。
+   2.2 データ定義
+   devices(端末)テーブル
+   カラム名 型 説明
+   id BIGINT 主キー
+   asset\_no VARCHAR(
+
+20)
+
+資産番号(例:PC-0001)
+
+model\_na
+me
+
+VARCHAR(
+50\)
+
+機種名
+
+device\_typ
+e
+
+VARCHAR(
+20\)
+
+‘LAPTOP’ / ‘TABLET’ / ‘MONITOR’
+
+status VARCHAR(
+20\)
+
+‘AVAILABLE’ / ‘LENT’ / ‘REPAIR’ / ‘DISPOSED’
+
+purchased\_
+at
+
+DATE 購入日
+
+lendings(貸出)テーブル
+カラム名 型 説明
+
+id BIGINT 主キー
+device\_id BIGINT 端末 ID
+user\_id BIGINT 借用者 ID
+lent\_at DATETIME 貸出日時
+due\_date DATE 返却予定日
+returned\_at DATETIME 返却日時(未返却は NULL)
+purpose VARCHAR(100) 利用目的
+employees(社員)テーブル
+カラム名 型 説明
+id BIGINT 主キー
+name VARCHAR
+(50)
+
+氏名
+
+department VARCHAR
+(50)
+
+部署名
+
+employment\_st
+atus
+
+VARCHAR
+(20)
+
+‘ACTIVE’ / ‘LEAVE’(休職) / ‘RETIRED’(退職)
+
+---
+
+添付ファイル：
+
+- フロー図.pdf
+- 例外系　洗い出し表.pdf
+
+例外系は優先度の高いものから実装してください。
+
+---
+
+PC貸出機能　例外系仕様書
+本文の「元No.」は、洗い出し表の掲載順に1〜21を付けた番号とする。「要決定」「修正案」は未確定事項である。
+
+**1．バリデーション一覧**
+
+入力の確認は画面側に加え、サーバー側でもDB更新前に実施する。エラー時は登録・更新を行わない。
+
+| ID   | 項目          | 必須・形式    | 条件                                    | エラー  |
+| ---- | ----------- | -------- | ------------------------------------- | ---- |
+| V-01 | 機種・端末の選択    | 必須・プルダウン | 未選択を認めない                              | E-01 |
+| V-02 | 返却予定日       | 必須・日付    | 未入力を認めない                              | E-01 |
+| V-03 | 利用目的        | 必須・文字列   | 未入力を認めない。空白のみ・前後空白の扱いは要決定             | E-01 |
+| V-04 | 利用目的の長さ     | 文字列      | 要決定。洗い出し表は「10文字以上を禁止」、配布資料のDB上限は100文字 | E-02 |
+| V-05 | 利用目的の使用可能文字 | 文字列      | 絵文字・機種依存文字・HTMLタグを禁止する案。具体的な判定条件は要決定  | E-03 |
+| V-06 | 返却予定日の範囲    | 日付       | 過去日を禁止。当日を認めるか、何日先まで認めるかは要決定          | E-04 |
+| V-07 | 日またぎ時の再確認   | 日付       | 確定時に返却予定日の条件を再確認する修正案。基準タイムゾーンは要決定    | E-05 |
+
+補足：
+
+- `lent_at` は利用者の入力項目ではなく、サーバーが貸出時の現在日時を設定する。
+- 借用者IDはログイン情報から取得する。利用者が入力する氏名などの欄は、配布された正常系画面にはない。
+- 日またぎだけでエラーにするのか、日付条件を満たさなくなった場合だけエラーにするのかは要決定。
+
+**2．業務ルール一覧**
+
+| ID／元No. | 検知するタイミング     | 決めた処理・条件                                                                             | 表示       |
+| ------- | ------------- | ------------------------------------------------------------------------------------ | -------- |
+| R-01／1  | 貸出確定時・DB更新前   | 対象端末の `status` が `AVAILABLE` でなければ貸出を禁止する                                            | E-06     |
+| R-02／2  | 貸出確定時・DB更新前   | 社員の `employment_status` が `ACTIVE` でなければ貸出を禁止する                                      | E-07     |
+| R-03／3  | 貸出確定時・DB更新前   | 本人の未返却貸出が3件以上なら追加貸出を禁止する。件数は `returned_at IS NULL` で数える修正案                           | E-08     |
+| R-04／4  | 確認画面の表示前      | 本人に未返却貸出があり、延滞がなければ追加貸出の注意を表示する。上限3台の制限は別途適用する                                       | W-01     |
+| R-05／5  | 貸出確定時         | 同じ端末の確認・更新を同時に実行させず、二重貸出を防ぐ。待機後に再確認するか、即時エラーにするかは要決定                                 | E-09・要調整 |
+| R-06／6  | 貸出確定要求の受信時    | ボタン連打による同じ申請の2件目を登録しない。通信再送時との応答統一は要決定                                               | E-10・要調整 |
+| R-07／7  | 入力確認時・貸出確定時   | V-01〜V-03の必須入力を確認する                                                                  | E-01     |
+| R-08／8  | 入力確認時・貸出確定時   | V-04の文字数制限を適用する                                                                      | E-02     |
+| R-09／9  | 入力確認時・貸出確定時   | V-05の使用可能文字の条件を適用する                                                                  | E-03     |
+| R-10／10 | 入力確認時・貸出確定時   | V-06の返却予定日の条件を適用する                                                                   | E-04     |
+| R-11／11 | 返却時・DB更新前     | 対象端末に対応する本人の未返却貸出が存在することを確認する。存在しなければ更新しない                                           | E-11     |
+| R-12／12 | 返却時・DB更新前     | 対象貸出の `returned_at` が設定済みなら再更新しない修正案。端末の状態だけで判定しない                                   | E-12     |
+| R-13／13 | 返却時           | `due_date` が今日より前でも返却を受け付け、成功後に注意を表示する。会話で決定した内容を反映                                  | W-02     |
+| R-14／14 | 貸出確定時・DB更新前   | 本人に `returned_at IS NULL` かつ `due_date < 今日` の貸出が1件でもあれば、新規貸出を禁止する                   | E-13     |
+| R-15／15 | 貸出確定時         | V-07の日またぎ時の確認を行う。具体的な判定条件は要決定                                                        | E-05     |
+| R-16／16 | 貸出・返却のDB更新時   | 貸出履歴と端末状態の更新を1トランザクションにする。途中失敗時は全更新をロールバックする                                         | E-14     |
+| R-17／17 | 通信断の検知時・再送時   | 申請ごとの受付番号を再送時にも使用する。処理済みなら新規登録せず元の結果を返し、未処理なら1回だけ登録する                                | E-15     |
+| R-18／18 | ブラウザバック後の再確定時 | 同じ申請の2件目を登録しない。R-06・R-17と共通の重複防止を使う修正案                                               | E-16・要調整 |
+| R-19／19 | 確認画面の表示前      | 本人に対応する申請内容がなければ、登録せず申請画面へ戻す                                                         | E-17     |
+| R-20／20 | 貸出完了画面の表示前    | 表示対象の貸出が登録済みで、本人のものであることを確認する。満たさなければ申請画面へ戻す。画面表示による新規登録は行わない                        | E-18     |
+| R-21／21 | 貸出・返却時・DB更新前  | 貸出では送信された借用者IDと本人のIDを照合し、登録にはログイン情報のIDを使う。返却では対象貸出の `user_id` と本人のIDを照合する。不一致なら更新しない | E-19     |
+
+R-16の更新内容：
+
+| 操作 | 同じトランザクションで行う更新                                                     |
+| -- | ------------------------------------------------------------------- |
+| 貸出 | `lendings` の新規登録と、`devices.status` の `LENT` への更新                    |
+| 返却 | 対象の `lendings.returned_at` の設定と、`devices.status` の `AVAILABLE` への更新 |
+
+実装前に確定する点：
+
+- 上限3台の確認は、同じ社員から同時に申請されても超過しないよう、件数確認と登録を制御する必要がある。
+- 受付番号・処理結果は貸出データと同じトランザクションで保存する修正案とする。受付番号の保存先は追加設計が必要。
+- 連打・ブラウザバック・通信再送で、同じ申請を処理済みだった場合の応答を統一する必要がある。
+- 返却の通信断に対する画面表示・再試行方法は、現在の洗い出しでは未確定。
+
+**3．エラーメッセージ一覧**
+
+表示場所は、洗い出し表で明記されていないものについての案とする。Eはエラー、Wは処理を妨げない注意を表す。
+
+| ID   | 条件             | 表示文言                                        | 表示場所             |
+| ---- | -------------- | ------------------------------------------- | ---------------- |
+| E-01 | 必須入力がない        | 未入力の項目があります。                                | 入力画面・対象欄の近くに赤字   |
+| E-02 | 文字数超過          | 値が長すぎます。もう一度入力しなおしてください。                    | 利用目的欄の近く         |
+| E-03 | 禁止する文字を検出      | 処理できない文字の入力があります。入力しなおしてください。               | 利用目的欄の近く         |
+| E-04 | 返却予定日が過去       | 修正案：返却予定日に過去の日付は指定できません。                    | 返却予定日欄の近く        |
+| E-05 | 日またぎで条件を満たさない  | 修正案：日付が変わったため、返却予定日を確認してください。               | 確認画面。判定条件と併せて要決定 |
+| E-06 | 端末が貸出不可        | この端末は現在貸出不可能です。別の端末を選択してください。               | 確定操作後の画面         |
+| E-07 | 社員が貸出対象外       | この端末を借りる権限がありません。                           | 確定操作後の画面         |
+| E-08 | 上限台数超過         | 貸出できる上限台数を超えているため申請を受け付けられません。              | 確定操作後の画面         |
+| E-09 | 同じ端末の処理が競合     | 要決定。待機する仕様か、即時拒否する仕様かに合わせる                  | 確定操作後の画面         |
+| E-10 | 連打による重複要求      | 要決定。元の結果を返す仕様に統一する場合は専用エラーを出さない             | 確認画面または完了画面      |
+| E-11 | 本人の対象貸出がない     | 貸出中の端末の情報と一致しません。他の端末でお試しください。              | 返却画面             |
+| E-12 | 対象貸出が返却済み      | この端末は返却済みです。                                | 返却画面             |
+| E-13 | 延滞中の新規貸出       | 返却予定日を過ぎている端末があります。返却してから新規貸出を行ってください。      | 確定操作後の画面         |
+| E-14 | 更新の失敗・ロールバック完了 | 修正案：処理を完了できませんでした。時間をおいてもう一度お試しください。        | 操作元の画面           |
+| E-15 | 貸出確定時の通信断・結果不明 | 通信が途切れたため、処理結果を確認できません。もう一度『確定』を押してください。    | 確認画面             |
+| E-16 | ブラウザバック後の重複要求  | 要決定。E-10と応答を統一する                            | 確認画面または完了画面      |
+| E-17 | 本人の申請内容がない     | 申請内容がありません。貸出申請画面から入力してください。                | 戻り先の申請画面         |
+| E-18 | 表示対象の貸出を確認できない | 貸出情報を確認できません。貸出状況を確認してください。                 | 戻り先の申請画面         |
+| E-19 | 他人の情報への操作      | この貸出情報を操作する権限がありません。                        | 操作元の画面           |
+| W-01 | 延滞のない追加貸出      | 現在、貸出中のPCがあります。追加で借りる場合は『確定』を押してください。       | 確認画面             |
+| W-02 | 延滞した端末の返却成功    | 返却が完了しました。返却予定日を過ぎています。次回は返却予定日までに返却してください。 | 返却完了画面           |
+
+E-14は失敗とロールバックが確認できた場合に使用する。結果が不明な通信断では、失敗したと断定せずE-15を使用する。
+
+**4．状態遷移表**
+
+対象はPC貸出・返却処理とする。修理・廃棄を実行する管理機能は、今回の仕様では定義しない。
+
+| 現在の状態＼変更後 | AVAILABLE       | LENT            | REPAIR | DISPOSED |
+| --------- | --------------- | --------------- | ------ | -------- |
+| AVAILABLE | 状態維持            | 貸出条件を満たした場合のみ可  | 対象外    | 対象外      |
+| LENT      | 有効な未返却貸出の返却時のみ可 | 状態維持。追加の貸出登録は禁止 | 対象外    | 対象外      |
+| REPAIR    | 対象外             | 貸出不可            | 状態維持   | 対象外      |
+| DISPOSED  | 対象外             | 貸出不可            | 対象外    | 状態維持     |
+
+- 貸出成功：貸出履歴を登録し、`AVAILABLE → LENT` に変更する。
+- 返却成功：対象貸出に返却日時を設定し、`LENT → AVAILABLE` に変更する。
+- 延滞中でも返却成功時の遷移は同じとし、注意文を追加する。
+- 条件違反では更新しない。トランザクション途中の失敗では、開始前の状態に戻す。
+- 処理済みの同一要求を再受信しても、追加の履歴登録や状態変更は行わない。
+
+---
+
+あとgoogleスプレッドシートにコピーしやすいように最初に送った３テーブルのデータを値はそのままで変形して送って
+
+---
+
+たてならびでもうまく機能する？
+
+---
+
+スプレッドシートに一行目だけ記入して、コードとhtmlをappscriptに入力した
+
+---
+
+APIってなに
+
+---
+
+setupがない
+
+---
+
+けっかがない
+
+---
+
+タブはあるが検索結果がない
+
+---
+
+const TTL = 10 \* 60 \* 1000;
+// 草案の要決定事項。以下は前版の暫定動作を維持しており、確定仕様ではない。
+const PROVISIONAL = {purposeMax:100, trimPurpose:true, allowToday:true,
+rejectDayChange:true};
+const ERROR\_IDS = {REQUIRED:'E-01',LENGTH:'E-02',PAST:'E-04',DAY\_CHANGED:'E-05',
+UNAVAILABLE:'E-06',INACTIVE:'E-07',LIMIT:'E-08',BUSY:'E-09',MISMATCH:'E-11',
+RETURNED:'E-12',OVERDUE:'E-13',UNCERTAIN:'E-15',NO\_REQUEST:'E-17',
+NO\_RESULT:'E-18',FORBIDDEN:'E-19'};
+```javascript
+const db = read_(), me = identity_(db), r = request_(db,id,me);
+if (r.state === 'DONE') return {...JSON.parse(r.result),duplicate:true};
+if (r.state === 'DONE') retu
+```
+
+---
+
+```javascript
+button.secondary{background:#e7edf5;color:#182333}button:disabled{opacity:.5;cursor:wait}
+#error{color:#b91c1c;white-space:pre-wrap}#notice,.warning{color:#815000;white-space:pre-wrap}
+#error,.field-error{color:#b91c1c;white-space:pre-wrap}#notice,.warning{color:#815000;white-space:pre-wrap}
+.row{border-bottom:1px solid #dce2ea;padding:12px 0}pre{white-space:pre-wrap;font:inherit;line-height:1.8}
+<h2>貸出申請</h2>
+<form id="lendForm">
+<form id="lendForm" novalidate>
+  <label for="device">端末</label><select id="device" required></select>
+  <p id="deviceError" class="field-error" role="alert"></p>
+  <label for="due">返却予定日</label><input id="due" type="date" required>
+  <p id="dueError" class="field-error" role="alert"></p>
+  <label for="purpose">利用目的</label><textarea id="purpose" rows="3" maxlength="100" required></textarea>
+  <p id="purposeError" class="field-error" role="alert"></p>
+  <button type="submit">確認画面へ</button>
+return new Promise((resolve,reject) => google.script.run.withSuccessHandler(r => {
+  if (r.ok) resolve(r.data); else reject(Object.assign(new Error(r.message),{code:r.code}));
+}).withFailureHandler(() => reject(new Error('通信が途切れたため、処理結果を確認できません。同じ受付番号で再確認してください。')))[name](...args));
+  if (r.ok) resolve(r.data); else reject(Object.assign(new Error(r.message),r));
+}).withFailureHandler(() => reject(Object.assign(new Error('通信が途切れたため、処理結果を確認できません。同じ受付番号で再確認してください。'),{error_id:'E-15'})))[name](...args));
+```
+
+}
+busy=true; $('error').textContent='';
+['device','due','purpose'].forEach(id => $(id+'Error').textContent='');
+document.querySelectorAll('button').forEach(b => b.disabled=true);
+try { await fn(); } catch(e) { $('error').textContent=e.message; }
+try { await fn(); } catch(e) {
+if (e.redirect==='home') {
+// E-17/E-18: 表示だけで再申請せず、入力画面へ戻す。
+// E-18の結果不整合時は受付番号を管理者へ伝えられるよう画面に残す。
+const receipt=saved && saved.request\_id;
+persist(null);
+screen('home');
+if (receipt) $('receipt').textContent='確認対象の受付番号：'+receipt;
+}
+const message=(e.error\_id ? '['+e.error\_id+'] ' : '')+e.message;
+if (e.field && $(e.field+'Error') && !$('home').hidden) $(e.field+'Error').textContent=message;
+else $('error').textContent=message;
+}
+finally { busy=false; document.querySelectorAll('button').forEach(b => b.disabled=false); }
+$('due').min=home.today;
+// サーバーと同じコードポイント数で検査する。HTML maxlengthのUTF-16単位との差を避ける。
+$('purpose').removeAttribute('maxlength');
+$('loans').replaceChildren();
+$('warning').textContent='';
+await resume();
+renderRequest(await rpc('prepareRequest',saved));
+}
+screen('pending');$('confirm').hidden=true;
+// prepare は同じ受付番号・同じ内容なら保存済み申請／結果を返す。
+const r=await rpc('prepareRequest',saved);
+// 再表示・再確認は読取りだけ。未登録ならE-17で申請画面に戻す。
+const r=await rpc('getRequest',saved.request\_id);
+renderRequest(r);
+}
+function renderRequest(r) {
+if (r.state==='DONE') { showDone(r);return; }
++'\n確認期限：'+new Date(r.expires\_at).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'});
+$('warning').textContent=r.warning;
+$('warning').textContent=r.warning ? '['+r.warning\_id+'] '+r.warning : '';
+$('confirm').hidden=false;
+$('doneDetails').textContent='貸出ID：'+r.lending\_id+(r.duplicate?'（処理済みの結果です。重複登録していません。）':'');
+$('doneWarning').textContent=r.warning || '';
+$('doneWarning').textContent=r.warning ? '['+(r.warning\_id || 'W-02')+'] '+r.warning : '';
+}
+function validateInput() {
+for (const id of ['device','due','purpose']) {
+const value=id==='purpose' && home.input\_rules.trimPurpose ? $(id).value.trim() : $(id).value;
+if (!value) throw Object.assign(new Error('未入力の項目があります。'),{error\_id:'E-01',field:id});
+}
+const p=home.input\_rules.trimPurpose ? $('purpose').value.trim() : $('purpose').value;
+if(Array.from(p).length>home.input\_rules.purposeMax)
+throw Object.assign(new Error('値が長すぎます。もう一度入力しなおしてください。'),{error\_id:'E-02',field:'purpose'});
+if($('due').value\<home.today)
+throw Object.assign(new Error('返却予定日に過去の日付は指定できません。'),{error\_id:'E-04',field:'due'});
+}
+$('lendForm').onsubmit=e=>{e.preventDefault();run(()=>{
+$('lendForm').onsubmit=e=>{e.preventDefault();run(()=>start({kind:'LEND',device\_id:$('device').value,
+due\_date:$('due').value,purpose:$('purpose').value}));};
+validateInput();return start({kind:'LEND',device\_id:$('device').value,
+due\_date:$('due').value,purpose:$('purpose').value});
+});};
+$('confirm').onclick=()=>run(async()=>{showDone(await rpc('confirmRequest',saved.request\_id));});
+
+
+indexない
+
+---
+
+プログラムから開くっていうのがないからコードここで送って
+
+---
+
+貼った
+
+---
+
+入れ替え済み
+
+
+
+できた。デプロイ？
+
+
+
+過去の日付が選べないようになってる
+
+---
+
+
+--
