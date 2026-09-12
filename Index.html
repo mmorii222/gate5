@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f3f6fa;
+      color: #182333;
+      margin: 0;
+    }
+    main {
+      max-width: 780px;
+      margin: 32px auto;
+      padding: 24px;
+      background: white;
+      border-radius: 12px;
+    }
+    h1 { font-size: 26px; }
+    h2 { font-size: 20px; }
+    label { display: block; margin: 18px 0 6px; }
+    input, select, textarea, button {
+      font: inherit;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid #8b99a9;
+      border-radius: 5px;
+    }
+    button {
+      border: 0;
+      border-radius: 5px;
+      background: #1558b0;
+      color: white;
+      margin: 10px 8px 10px 0;
+      cursor: pointer;
+    }
+    button.secondary { background: #e7edf5; color: #182333; }
+    button:disabled { opacity: .5; cursor: wait; }
+    #error, .field-error {
+      color: #b91c1c;
+      white-space: pre-wrap;
+    }
+    #notice, .warning {
+      color: #815000;
+      white-space: pre-wrap;
+    }
+    .row {
+      border-bottom: 1px solid #dce2ea;
+      padding: 12px 0;
+    }
+    pre {
+      white-space: pre-wrap;
+      font: inherit;
+      line-height: 1.8;
+    }
+    [hidden] { display: none !important; }
+    .muted { color: #526071; font-size: 14px; }
+    #receipt { overflow-wrap: anywhere; }
+    @media (max-width: 600px) {
+      main { margin: 0; border-radius: 0; padding: 18px; }
+    }
+  </style>
+</head>
+
+<body>
+<main>
+  <h1>PC貸出管理</h1>
+  <p id="who">社員情報を確認しています…</p>
+  <p id="error" role="alert"></p>
+  <p id="notice" role="status"></p>
+  <p id="receipt" class="muted"></p>
+
+  <section id="home" hidden>
+    <h2>貸出申請</h2>
+
+    <form id="lendForm" novalidate>
+      <label for="device">端末</label>
+      <select id="device" required></select>
+      <p id="deviceError" class="field-error" role="alert"></p>
+
+      <label for="due">返却予定日</label>
+      <input id="due" type="date" required>
+      <p id="dueError" class="field-error" role="alert"></p>
+
+      <label for="purpose">利用目的</label>
+      <textarea id="purpose" rows="3" required></textarea>
+      <p id="purposeError" class="field-error" role="alert"></p>
+
+      <button type="submit">確認画面へ</button>
+    </form>
+
+    <h2>貸出中のPC・返却</h2>
+    <div id="loans"></div>
+    <button class="secondary" id="refresh">一覧を更新</button>
+  </section>
+
+  <section id="pending" hidden>
+    <h2 id="confirmTitle">申請内容の確認</h2>
+    <pre id="details"></pre>
+    <p class="warning" id="warning"></p>
+
+    <button id="confirm" hidden>確定</button>
+    <button id="retry" class="secondary">同じ受付番号で再確認</button>
+    <button id="cancel" class="secondary">申請を取り消して戻る</button>
+  </section>
+
+  <section id="done" hidden>
+    <h2 id="doneTitle"></h2>
+    <p id="doneDetails"></p>
+    <p class="warning" id="doneWarning"></p>
+    <button id="back">一覧へ戻る</button>
+  </section>
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  let home;
+  let saved = null;
+  let key;
+  let busy = false;
+
+  function rpc(name, ...args) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(r => {
+          if (r.ok) {
+            resolve(r.data);
+          } else {
+            reject(Object.assign(new Error(r.message), r));
+          }
+        })
+        .withFailureHandler(() => {
+          reject(Object.assign(
+            new Error(
+              '通信が途切れたため、処理結果を確認できません。同じ受付番号で再確認してください。'
+            ),
+            { error_id: 'E-15' }
+          ));
+        })[name](...args);
+    });
+  }
+
+  async function run(fn) {
+    if (busy) return;
+
+    busy = true;
+    $('error').textContent = '';
+
+    ['device', 'due', 'purpose'].forEach(id => {
+      $(id + 'Error').textContent = '';
+    });
+
+    document.querySelectorAll('button').forEach(b => {
+      b.disabled = true;
+    });
+
+    try {
+      await fn();
+    } catch (e) {
+      if (e.redirect === 'home') {
+        const receipt = saved && saved.request_id;
+        persist(null);
+        screen('home');
+
+        if (receipt) {
+          $('receipt').textContent = '確認対象の受付番号：' + receipt;
+        }
+      }
+
+      const message =
+        (e.error_id ? '[' + e.error_id + '] ' : '') + e.message;
+
+      if (e.field && $(e.field + 'Error') && !$('home').hidden) {
+        $(e.field + 'Error').textContent = message;
+      } else {
+        $('error').textContent = message;
+      }
+    } finally {
+      busy = false;
+      document.querySelectorAll('button').forEach(b => {
+        b.disabled = false;
+      });
+    }
+  }
+
+  function screen(id) {
+    ['home', 'pending', 'done'].forEach(s => {
+      $(s).hidden = s !== id;
+    });
+  }
+
+  function persist(v) {
+    if (v) {
+      localStorage.setItem(key, JSON.stringify(v));
+    } else {
+      localStorage.removeItem(key);
+    }
+
+    saved = v;
+    $('receipt').textContent = v ? '受付番号：' + v.request_id : '';
+  }
+
+  function uuid() {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 15) | 64;
+    b[8] = (b[8] & 63) | 128;
+
+    const h = Array.from(
+      b,
+      x => x.toString(16).padStart(2, '0')
+    ).join('');
+
+    return h.slice(0, 8) + '-' +
+      h.slice(8, 12) + '-' +
+      h.slice(12, 16) + '-' +
+      h.slice(16, 20) + '-' +
+      h.slice(20);
+  }
+
+  async function loadHome() {
+    home = await rpc('getHome');
+
+    $('who').textContent =
+      home.me.name + '（' + home.me.department + '）';
+
+    key = 'pc-lending-v1:' + home.me.id;
+
+    $('device').replaceChildren(
+      new Option('端末を選択してください', '')
+    );
+
+    home.devices.forEach(d => {
+      $('device').add(
+        new Option(d.asset_no + ' / ' + d.model_name, d.id)
+      );
+    });
+
+    $('due').removeAttribute('min');
+    $('loans').replaceChildren();
+
+    if (!home.lendings.length) {
+      $('loans').textContent = '貸出中のPCはありません。';
+    }
+
+    home.lendings.forEach(l => {
+      const row = document.createElement('div');
+      row.className = 'row';
+
+      const label = document.createElement('span');
+      label.textContent =
+        l.asset_no + '　返却予定日：' + l.due_date +
+        (l.overdue ? '（延滞）' : '');
+
+      const button = document.createElement('button');
+      button.textContent = '返却する';
+
+      button.onclick = () => run(() => start({
+        kind: 'RETURN',
+        device_id: l.device_id,
+        lending_id: l.id
+      }));
+
+      row.append(label, document.createElement('br'), button);
+      $('loans').append(row);
+    });
+  }
+
+  async function start(p) {
+    persist({
+      ...p,
+      user_id: home.me.id,
+      request_id: uuid(),
+      application_date: home.today
+    });
+
+    screen('pending');
+    $('confirm').hidden = true;
+    $('details').textContent = '申請内容を確認しています…';
+    $('warning').textContent = '';
+
+    renderRequest(await rpc('prepareRequest', saved));
+  }
+
+  async function resume() {
+    screen('pending');
+    $('confirm').hidden = true;
+
+    const result = await rpc('getRequest', saved.request_id);
+    renderRequest(result);
+  }
+
+  function renderRequest(r) {
+    if (r.state === 'DONE') {
+      showDone(r);
+      return;
+    }
+
+    $('confirmTitle').textContent =
+      r.kind === 'LEND' ? '貸出内容の確認' : '返却内容の確認';
+
+    $('details').textContent =
+      '端末：' + r.asset_no +
+      (r.kind === 'LEND'
+        ? '\n返却予定日：' + r.payload.due_date +
+          '\n利用目的：' + r.payload.purpose
+        : '') +
+      '\n確認期限：' +
+      new Date(r.expires_at).toLocaleString(
+        'ja-JP',
+        { timeZone: 'Asia/Tokyo' }
+      );
+
+    $('warning').textContent =
+      r.warning ? '[' + r.warning_id + '] ' + r.warning : '';
+
+    $('confirm').hidden = false;
+  }
+
+  function showDone(r) {
+    screen('done');
+
+    $('doneTitle').textContent = r.message;
+
+    $('doneDetails').textContent =
+      '貸出ID：' + r.lending_id +
+      (r.duplicate
+        ? '（処理済みの結果です。重複登録していません。）'
+        : '');
+
+    $('doneWarning').textContent =
+      r.warning
+        ? '[' + (r.warning_id || 'W-02') + '] ' + r.warning
+        : '';
+  }
+
+  function validateInput() {
+    for (const id of ['device', 'due', 'purpose']) {
+      const value =
+        id === 'purpose' && home.input_rules.trimPurpose
+          ? $(id).value.trim()
+          : $(id).value;
+
+      if (!value) {
+        throw Object.assign(
+          new Error('未入力の項目があります。'),
+          { error_id: 'E-01', field: id }
+        );
+      }
+    }
+
+    const purpose = home.input_rules.trimPurpose
+      ? $('purpose').value.trim()
+      : $('purpose').value;
+
+    if (Array.from(purpose).length > home.input_rules.purposeMax) {
+      throw Object.assign(
+        new Error('値が長すぎます。もう一度入力しなおしてください。'),
+        { error_id: 'E-02', field: 'purpose' }
+      );
+    }
+
+    if ($('due').value < home.today) {
+      throw Object.assign(
+        new Error('返却予定日に過去の日付は指定できません。'),
+        { error_id: 'E-04', field: 'due' }
+      );
+    }
+  }
+
+  $('lendForm').onsubmit = e => {
+    e.preventDefault();
+
+    run(() => {
+      validateInput();
+
+      return start({
+        kind: 'LEND',
+        device_id: $('device').value,
+        due_date: $('due').value,
+        purpose: $('purpose').value
+      });
+    });
+  };
+
+  $('confirm').onclick = () => run(async () => {
+    showDone(await rpc('confirmRequest', saved.request_id));
+  });
+
+  $('retry').onclick = () => run(resume);
+
+  $('cancel').onclick = () => run(async () => {
+    try {
+      await rpc('cancelRequest', saved.request_id);
+    } catch (e) {
+      if (e.code !== 'NO_REQUEST') throw e;
+    }
+
+    persist(null);
+    await loadHome();
+    screen('home');
+  });
+
+  $('back').onclick = () => run(async () => {
+    persist(null);
+    await loadHome();
+    screen('home');
+  });
+
+  $('refresh').onclick = () => run(loadHome);
+
+  run(async () => {
+    await loadHome();
+
+    const raw = localStorage.getItem(key);
+
+    if (raw) {
+      saved = JSON.parse(raw);
+      $('receipt').textContent = '受付番号：' + saved.request_id;
+      await resume();
+    } else {
+      screen('home');
+    }
+  });
+</script>
+</body>
+</html>
